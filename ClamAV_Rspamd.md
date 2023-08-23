@@ -214,10 +214,6 @@ clamav {
 }
 ```
 
-## Web check log RSpamd
-http://hostname/rspamd
-
-pass : P4ssvv0rD
 ## Remove Amavis ( Rspamd and Clamav )
 - Stop Amavis
 ```
