@@ -60,23 +60,6 @@ use = ["x-spamd-bar", "x-spam-level", "authentication-results"];
 ```
 - Restart
 ``` sudo systemctl restart rspamd ```
-### Apache2
-- /etc/apache2/sites-enabled/000-default-le-ssl.conf
-
-```
-vim /etc/apache2/sites-enabled/000-default-le-ssl.conf
-```
-Thêm vào trong trên dòng `Errorlog` 
-```
- <Location /rspamd>
-   Require all granted
- </Location>
- RewriteEngine On
- RewriteRule ^/rspamd$ /rspamd/ [R,L]
- RewriteRule ^/rspamd/(.*) http://localhost:11334/$1 [P,L]
-
-```
-
 ### Postfix 
 
 ```
