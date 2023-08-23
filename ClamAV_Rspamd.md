@@ -1,0 +1,500 @@
+# Rspamd, ClamAV 
+# Table of contents
+
+- [Rspamd, ClamAV](#rspamd-clamav)
+  - [Install](#install)
+  - [Config](#config)
+  - [Tích hợp Clamav vs RSpamd](#tch-hp-clamav-vs-rspamd)
+  - [Web check log RSpamd](#web-check-log-rspamd)
+  - [Remove Amavis ( Rspamd and Clamav )](#remove-amavis--rspamd-and-clamav-)
+## Install 
+### ClamAV
+```
+sudo apt -y install clamav
+sed -i -e "s/^NotifyClamd/#NotifyClamd/g" /etc/clamav/freshclam.conf
+systemctl stop clamav-freshclam
+freshclam
+systemctl start clamav-freshclam
+```
+### Rspamd and redis
+```
+sudo -i 
+sudo apt install redis-server
+sudo apt update
+sudo apt install unbound
+sudo echo "nameserver 127.0.0.1" >> /etc/resolvconf/resolv.conf.d/head
+sudo resolvconf -u
+
+sudo apt install software-properties-common lsb-release
+sudo apt install lsb-release wget
+wget -O- https://rspamd.com/apt-stable/gpg.key | sudo apt-key add -
+echo "deb http://rspamd.com/apt-stable/ $(lsb_release -cs) main" | sudo tee -a /etc/apt/sources.list.d/rspamd.list
+sudo apt update
+sudo apt install rspamd
+```
+## Config
+### Rspamd
+- /etc/rspamd/local.d/worker-normal.inc
+```
+vim /etc/rspamd/local.d/worker-normal.inc
+```
+ 
+```
+bind_socket = "127.0.0.1:11333";
+```
+
+- /etc/rspamd/local.d/worker-proxy.inc
+```
+vim /etc/rspamd/local.d/worker-proxy.inc
+```
+ 
+```
+bind_socket = "127.0.0.1:11332";
+milter = yes;
+timeout = 120s;
+upstream "local" {
+  default = yes;
+  self_scan = yes;
+}
+```
+- /etc/rspamd/local.d/worker-controller.inc
+```
+vim /etc/rspamd/local.d/worker-controller.inc
+```
+  
+```
+password = "$2$khz7u8nxgggsfay3qta7ousbnmi1skew$zdat4nsm7nd3ctmiigx9kjyo837hcjodn1bob5jaxt7xpkieoctb";
+```
+- /etc/rspamd/local.d/classifier-bayes.conf
+```
+vim /etc/rspamd/local.d/classifier-bayes.conf
+```
+ 
+```
+servers = "127.0.0.1";
+backend = "redis";
+```
+- /etc/rspamd/local.d/milter_headers.conf
+```
+vim /etc/rspamd/local.d/milter_headers.conf
+```
+ 
+```
+use = ["x-spamd-bar", "x-spam-level", "authentication-results"];
+```
+- Restart
+``` sudo systemctl restart rspamd ```
+### Apache2
+- /etc/apache2/sites-enabled/000-default-le-ssl.conf
+
+```
+vim /etc/apache2/sites-enabled/000-default-le-ssl.conf
+```
+Thêm vào trong trên dòng `Errorlog` 
+```
+ <Location /rspamd>
+   Require all granted
+ </Location>
+ RewriteEngine On
+ RewriteRule ^/rspamd$ /rspamd/ [R,L]
+ RewriteRule ^/rspamd/(.*) http://localhost:11334/$1 [P,L]
+
+```
+
+### Postfix 
+
+```
+sudo postconf -e "milter_protocol = 6"
+sudo postconf -e "milter_mail_macros = i {mail_addr} {client_addr} {client_name} {auth_authen}"
+sudo postconf -e "milter_default_action = accept"
+sudo postconf -e "smtpd_milters = inet:127.0.0.1:11332"
+sudo postconf -e "non_smtpd_milters = inet:127.0.0.1:11332"
+```
+- Restart
+```sudo systemctl restart postfix```
+
+### Dovecot
+```
+sudo apt install dovecot-sieve dovecot-managesieved
+```
+
+- /etc/dovecot/conf.d/20-lmtp.conf
+```
+vim /etc/dovecot/conf.d/20-lmtp.conf
+```
+
+```
+protocol lmtp {
+  postmaster_address = postmaster@linuxize.com
+  mail_plugins = $mail_plugins sieve
+}
+```
+
+- /etc/dovecot/conf.d/20-imap.conf
+
+```
+vim /etc/dovecot/conf.d/20-imap.conf
+```
+
+```
+protocol imap {
+  mail_plugins = $mail_plugins imap_quota imap_sieve
+}
+```
+
+- /etc/dovecot/conf.d/20-managesieve.conf
+```
+vim /etc/dovecot/conf.d/20-managesieve.conf
+```
+
+```
+service managesieve-login {
+  inet_listener sieve {
+    port = 4190
+  }
+service managesieve {
+  process_limit = 1024
+}
+
+```
+
+- /etc/dovecot/conf.d/90-sieve.conf
+```
+vim /etc/dovecot/conf.d/90-sieve.conf
+```
+
+```
+plugin {
+    # sieve = file:~/sieve;active=~/.dovecot.sieve
+    sieve_plugins = sieve_imapsieve sieve_extprograms
+    sieve_before = /var/mail/vmail/sieve/global/spam-global.sieve
+    sieve = file:/var/mail/vmail/sieve/%d/%n/scripts;active=/var/mail/vmail/sieve/%d/%n/active-script.sieve
+
+    imapsieve_mailbox1_name = Spam
+    imapsieve_mailbox1_causes = COPY
+    imapsieve_mailbox1_before = file:/var/mail/vmail/sieve/global/report-spam.sieve
+
+    imapsieve_mailbox2_name = *
+    imapsieve_mailbox2_from = Spam
+    imapsieve_mailbox2_causes = COPY
+    imapsieve_mailbox2_before = file:/var/mail/vmail/sieve/global/report-ham.sieve
+
+    sieve_pipe_bin_dir = /usr/bin
+    sieve_global_extensions = +vnd.dovecot.pipe
+}
+```
+
+```
+mkdir -p /var/mail/vmail/sieve/global
+```
+```
+vim /var/mail/vmail/sieve/global/spam-global.sieve
+```
+```
+require ["fileinto","mailbox"];
+
+if anyof(
+    header :contains ["X-Spam-Flag"] "YES",
+    header :contains ["X-Spam"] "Yes",
+    header :contains ["Subject"] "*** SPAM ***"
+    )
+{
+    fileinto :create "Spam";
+    stop;
+}
+
+```
+
+- /var/mail/vmail/sieve/global/report-spam.sieve
+```
+vim /var/mail/vmail/sieve/global/report-spam.sieve
+```
+```
+require ["vnd.dovecot.pipe", "copy", "imapsieve"];
+pipe :copy "rspamc" ["learn_spam"];
+```
+
+- /var/mail/vmail/sieve/global/report-ham.sieve
+```
+vim /var/mail/vmail/sieve/global/report-ham.sieve
+```
+
+```
+
+require ["vnd.dovecot.pipe", "copy", "imapsieve"];
+pipe :copy "rspamc" ["learn_ham"];
+```
+
+```
+sievec /var/mail/vmail/sieve/global/spam-global.sieve
+sievec /var/mail/vmail/sieve/global/report-spam.sieve
+sievec /var/mail/vmail/sieve/global/report-ham.sieve
+sudo chown -R vmail: /var/mail/vmail/sieve/
+```
+- Restart
+```
+sudo systemctl restart dovecot
+```
+
+
+### Fix
+- Nếu check syslog thấy lỗi DNS: 
+```
+vim  /etc/systemd/resolved.conf
+```
+```
+[Resolve]
+DNS=1.1.1.1 1.0.0.1
+FallbackDNS=
+DNSSEC=no
+```
+```
+sudo systemctl restart systemd-resolved.service
+```
+
+## Tích hợp Clamav vs RSpamd
+- /etc/clamav/clamd.conf
+```
+vim /etc/clamav/clamd.conf
+```
+
+```
+TCPSocket 3310
+TCPAddr 127.0.0.1
+# TemporaryDirectory is not set to its default /tmp here to make overriding
+# the default with environment variables TMPDIR/TMP/TEMP possible
+User clamav
+ScanMail true
+ScanArchive true
+ArchiveBlockEncrypted false
+MaxDirectoryRecursion 15
+FollowDirectorySymlinks false
+FollowFileSymlinks false
+ReadTimeout 180
+MaxThreads 12
+MaxConnectionQueueLength 15
+LogSyslog true
+LogRotate true
+LogFacility LOG_LOCAL6
+LogClean false
+LogVerbose false
+PreludeEnable no
+PreludeAnalyzerName ClamAV
+DatabaseDirectory /var/lib/clamav
+OfficialDatabaseOnly false
+SelfCheck 3600
+Foreground false
+Debug false
+ScanPE true
+MaxEmbeddedPE 10M
+ScanOLE2 true
+ScanPDF true
+ScanHTML true
+MaxHTMLNormalize 10M
+MaxHTMLNoTags 2M
+MaxScriptNormalize 5M
+MaxZipTypeRcg 1M
+ScanSWF true
+ExitOnOOM false
+LeaveTemporaryFiles false
+AlgorithmicDetection true
+ScanELF true
+IdleTimeout 60
+CrossFilesystems true
+PhishingSignatures true
+PhishingScanURLs true
+PhishingAlwaysBlockSSLMismatch false
+PhishingAlwaysBlockCloak false
+PartitionIntersection false
+DetectPUA false
+ScanPartialMessages false
+HeuristicScanPrecedence false
+StructuredDataDetection false
+CommandReadTimeout 60
+SendBufTimeout 200
+MaxQueue 100
+ExtendedDetectionInfo true
+OLE2BlockMacros false
+AllowAllMatchScan true
+ForceToDisk false
+DisableCertCheck false
+DisableCache false
+MaxScanTime 120000
+MaxScanSize 100M
+MaxFileSize 25M
+MaxRecursion 16
+MaxFiles 10000
+MaxPartitions 50
+MaxIconsPE 100
+PCREMatchLimit 10000
+PCRERecMatchLimit 5000
+PCREMaxFileSize 25M
+ScanXMLDOCS true
+ScanHWP3 true
+MaxRecHWP3 16
+StreamMaxLength 50M
+LogFile /var/log/clamav/clamav.log
+LogTime true
+LogFileUnlock false
+LogFileMaxSize 0
+Bytecode true
+BytecodeSecurity TrustSigned
+BytecodeTimeout 60000
+OnAccessMaxFileSize 5M
+```
+- /etc/rspamd/local.d/antivirus.conf
+```
+vim /etc/rspamd/local.d/antivirus.conf
+```
+
+```
+# local.d/antivirus.conf
+enabled = true
+
+# multiple scanners could be checked, for each we create a configuration block with an arbitrary name
+clamav {
+  # If set force this action if any virus is found (default unset: no action is forced)
+  action = "reject";
+  message = '${SCANNER}: virus found: "${VIRUS}"';
+  # Scan mime_parts seperately - otherwise the complete mail will be transfered to AV Scanner
+  #attachments_only = true; # Before 1.8.1
+  #scan_mime_parts = true; # After 1.8.1
+  # Scanning Text is suitable for some av scanner databases (e.g. Sanesecurity)
+  #scan_text_mime = false; # 1.8.1 +
+  #scan_image_mime = false; # 1.8.1 +
+  # If `max_size` is set, messages > n bytes in size are not scanned
+  #max_size = 20000000;
+  # symbol to add (add it to metric if you want non-zero weight)
+  symbol = "CLAM_VIRUS";
+  # type of scanner: "clamav", "fprot", "sophos" or "savapi"
+  type = "clamav";
+  # If set true, log message is emitted for clean messages
+  #log_clean = false;
+  # Prefix used for caching in Redis: scanner-specific defaults are used. If Redis is enabled and
+  # multiple scanners of the same type are present, it is important to set prefix to something unique.
+  #prefix = "rs_cl_";
+  # For "savapi" you must also specify the following variable
+  #product_id = 12345;
+  # servers to query (if port is unspecified, scanner-specific default is used)
+  # can be specified multiple times to pool servers
+  # can be set to a path to a unix socket
+  servers = "127.0.0.1:3310";
+  timeout = 30;
+  # if `patterns` is specified virus name will be matched against provided regexes and the related
+  # symbol will be yielded if a match is found. If no match is found, default symbol is yielded.
+  patterns {
+    # symbol_name = "pattern";
+    JUST_EICAR = '^Eicar-Test-Signature$';
+  }
+  # In version 1.7.0+ patterns could be extended
+  #patterns = {SANE_MAL = 'Sanesecurity\.Malware\.*', CLAM_UNOFFICIAL = 'UNOFFICIAL$'};
+  # `whitelist` points to a map of signature names. Hits on these signatures are ignored.
+  whitelist = "/etc/rspamd/antivirus.wl";
+}
+```
+
+- /etc/postfix/main.cf
+```
+vim /etc/postfix/main.cf
+```
+
+```
+content_filter = scan:[127.0.0.1]:10024
+```
+
+- /etc/postfix/master.cf
+```
+vim /etc/postfix/master.cf
+```
+
+```
+#/etc/postfix/master.cf
+
+scan unix  -       -       n       -       16       smtp
+    -o smtp_send_xforward_command=yes
+    -o disable_mime_output_conversion=yes
+    -o smtp_generic_maps=
+    -o smtp_tls_security_level=none
+    -o smtpd_tls_security_level=none
+    -o smtpd_authorized_xforward_hosts=127.0.0.0/8
+    -o receive_override_options=no_unknown_recipient_checks,no_header_body_checks
+
+smtp-amavis   unix   -   -   n   -   2   smtp
+    -o syslog_name=postfix/amavis
+    -o smtp_data_done_timeout=1200
+    -o smtp_send_xforward_command=yes
+    -o disable_dns_lookups=yes
+    -o max_use=20
+    -o smtp_tls_security_level=none
+
+127.0.0.1:10025   inet   n    -     n     -     -    smtpd
+    -o syslog_name=postfix/10025
+    -o content_filter=
+    -o mynetworks_style=host
+    -o mynetworks=127.0.0.0/8
+    -o local_recipient_maps=
+    -o relay_recipient_maps=
+    -o strict_rfc821_envelopes=yes
+    -o smtp_tls_security_level=none
+    -o smtpd_tls_security_level=none
+    -o smtpd_restriction_classes=
+    -o smtpd_delay_reject=no
+    -o smtpd_client_restrictions=permit_mynetworks,reject
+    -o smtpd_helo_restrictions=
+    -o smtpd_sender_restrictions=
+    -o smtpd_recipient_restrictions=permit_mynetworks,reject
+    -o smtpd_end_of_data_restrictions=
+    -o smtpd_error_sleep_time=0
+    -o smtpd_soft_error_limit=1001
+    -o smtpd_hard_error_limit=1000
+    -o smtpd_client_connection_count_limit=0
+    -o smtpd_client_connection_rate_limit=0
+    -o receive_override_options=no_header_body_checks,no_unknown_recipient_checks,no_address_mappings
+
+```
+
+## Web check log RSpamd
+http://hostname/rspamd
+pass : P4ssvv0rD
+## Remove Amavis ( Rspamd and Clamav )
+- Stop Amavis
+```
+ systemctl stop amavis.service
+ ```
+ 
+ - /etc/postfix/main.cf
+ ```
+ vim /etc/postfix/main.cf
+ ```
+ Comment 
+ ```
+content_filter = scan:[127.0.0.1]:10024
+content_filter = smtp-amavis:[127.0.0.1]:10024
+ ```
+ Add 
+ ```
+milter_protocol = 6
+milter_mail_macros = i {mail_addr} {client_addr} {client_name} {auth_authen}
+milter_default_action = accept
+smtpd_milters = inet:127.0.0.1:11332
+non_smtpd_milters = inet:127.0.0.1:11332
+ ```
+ - /etc/postfix/master.cf
+ ```
+ vim /etc/postfix/master.cf
+ ```
+ Find and Comment 
+ ```
+ smtp-amavis   unix   -   -   n   -   2   smtp
+    -o syslog_name=postfix/amavis
+    -o smtp_data_done_timeout=1200
+    -o smtp_send_xforward_command=yes
+    -o disable_dns_lookups=yes
+    -o max_use=20
+    -o smtp_tls_security_level=none
+```
+- Restart 
+```
+systemctl restart rspamd
+systemctl restart postfix
+```
