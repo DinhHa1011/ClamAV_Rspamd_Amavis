@@ -310,3 +310,6 @@ systemctl stop amavis.service
 systemctl restart rspamd
 systemctl restart postfix
 ```
+### Login Rspamd web
+url: https://dinhha.online/rspamd/
+pass: P4ssvv0rD
