@@ -64,6 +64,20 @@ systemctl stop rspamd
         -o smtpd_client_connection_rate_limit=0
         -o receive_override_options=no_header_body_checks,no_unknown_recipient_checks,no_address_mappings
     ```
+-  Chỉnh sửa file cấu hình `15-av_scanners` của Amavis để tích hợp với Clamav
+    + Mở file
+    ```
+    vim /etc/amavis/conf.d/15-av_scanners
+    ```
+    + Trong phần cấu hình clamav sửa `/var/run/clamav/clamd.ctl` thành       `127.0.0.1:3310` để kết nối với port 3310 của Clamav
+    ```
+
+    ['ClamAV-clamd',
+    \&ask_daemon, ["CONTSCAN {}\n", '127.0.0.1:3310'],
+    qr/\bOK$/, qr/\bFOUND$/,
+    qr/^.*?: (?!Infected Archive)(.*) FOUND$/ ],
+
+    ```
 - Khởi động lại các service để áp dụng cấu hình 
 ```
 systemctl restart postfix
